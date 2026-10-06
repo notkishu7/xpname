@@ -12,7 +12,200 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.2.0
+      - name: Write source files
+        run: |
+          mkdir -p src/main/resources
+          cat > src/main/resources/fabric.mod.json <<'XPNAME_EOF'
+          {
+            "schemaVersion": 1,
+            "id": "xpname",
+            "version": "${version}",
+            "name": "XP Name",
+            "description": "Replaces the XP level number above your hotbar with your name or any custom text.",
+            "environment": "client",
+            "entrypoints": { "client": ["com.example.xpname.XpNameClient"] },
+            "mixins": ["xpname.mixins.json"],
+            "depends": { "fabricloader": ">=0.18.0", "minecraft": "~1.21.11", "java": ">=21", "fabric-api": "*" }
+          }
+          XPNAME_EOF
+          mkdir -p src/main/resources
+          cat > src/main/resources/xpname.mixins.json <<'XPNAME_EOF'
+          {
+            "required": true,
+            "package": "com.example.xpname.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": ["ExperienceBarMixin"],
+            "injectors": { "defaultRequire": 1 }
+          }
+          XPNAME_EOF
+          mkdir -p src/main/java/com/example/xpname/mixin
+          cat > src/main/java/com/example/xpname/mixin/ExperienceBarMixin.java <<'XPNAME_EOF'
+          package com.example.xpname.mixin;
+ 
+          import com.example.xpname.XpNameConfig;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.hud.bar.ExperienceBar;
+          import net.minecraft.client.render.RenderTickCounter;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+ 
+          @Mixin(ExperienceBar.class)
+          public class ExperienceBarMixin {
+              // Suppress the vanilla XP level number so our text can take its place.
+              @Inject(method = "renderAddons", at = @At("HEAD"), cancellable = true)
+              private void xpname$hideVanillaLevel(DrawContext context, RenderTickCounter tickCounter, CallbackInfo ci) {
+                  if (XpNameConfig.enabled) ci.cancel();
+              }
+          }
+          XPNAME_EOF
+          mkdir -p src/main/java/com/example/xpname
+          cat > src/main/java/com/example/xpname/XpNameConfig.java <<'XPNAME_EOF'
+          package com.example.xpname;
+ 
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
+ 
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+ 
+          public class XpNameConfig {
+              public static boolean enabled = true;
+              /** Placeholders: {name} {xp} {points} {health} {food}. Use & for colour codes (e.g. &6Hanna). */
+              public static String text = "{name}";
+              public static int color = 0x80FF20; // vanilla XP green (RGB)
+              public static boolean shadow = true;
+              public static int yOffset = 0;
+ 
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+              private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("xpname.json");
+ 
+              private static class Data {
+                  boolean enabled = XpNameConfig.enabled;
+                  String text = XpNameConfig.text;
+                  int color = XpNameConfig.color;
+                  boolean shadow = XpNameConfig.shadow;
+                  int yOffset = XpNameConfig.yOffset;
+              }
+ 
+              public static void load() {
+                  try {
+                      if (Files.exists(FILE)) {
+                          Data d = GSON.fromJson(Files.readString(FILE), Data.class);
+                          if (d != null) { enabled = d.enabled; text = d.text; color = d.color; shadow = d.shadow; yOffset = d.yOffset; }
+                      } else save();
+                  } catch (Exception e) { e.printStackTrace(); }
+              }
+ 
+              public static void save() {
+                  try { Files.writeString(FILE, GSON.toJson(new Data())); }
+                  catch (Exception e) { e.printStackTrace(); }
+              }
+ 
+              public static void reset() {
+                  enabled = true; text = "{name}"; color = 0x80FF20; shadow = true; yOffset = 0; save();
+              }
+          }
+          XPNAME_EOF
+          mkdir -p src/main/java/com/example/xpname
+          cat > src/main/java/com/example/xpname/XpNameClient.java <<'XPNAME_EOF'
+          package com.example.xpname;
+ 
+          import com.mojang.brigadier.arguments.IntegerArgumentType;
+          import com.mojang.brigadier.arguments.StringArgumentType;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.client.render.RenderTickCounter;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.Identifier;
+ 
+          public class XpNameClient implements ClientModInitializer {
+ 
+              @Override
+              public void onInitializeClient() {
+                  XpNameConfig.load();
+                  HudElementRegistry.addLast(Identifier.of("xpname", "xp_text"), this::render);
+ 
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                      var root = ClientCommandManager.literal("xpname");
+ 
+                      root.then(ClientCommandManager.literal("name").executes(c -> {
+                          XpNameConfig.text = "{name}"; XpNameConfig.save();
+                          c.getSource().sendFeedback(Text.literal("XP text now shows your username.")); return 1; }));
+ 
+                      root.then(ClientCommandManager.literal("xp").executes(c -> {
+                          XpNameConfig.text = "{xp}"; XpNameConfig.save();
+                          c.getSource().sendFeedback(Text.literal("XP text now shows your level (vanilla look).")); return 1; }));
+ 
+                      root.then(ClientCommandManager.literal("set")
+                          .then(ClientCommandManager.argument("text", StringArgumentType.greedyString()).executes(c -> {
+                              XpNameConfig.text = StringArgumentType.getString(c, "text"); XpNameConfig.save();
+                              c.getSource().sendFeedback(Text.literal("XP text set to: " + XpNameConfig.text)); return 1; })));
+ 
+                      root.then(ClientCommandManager.literal("color")
+                          .then(ClientCommandManager.argument("hex", StringArgumentType.word()).executes(c -> {
+                              try {
+                                  String h = StringArgumentType.getString(c, "hex").replace("#", "");
+                                  XpNameConfig.color = Integer.parseInt(h, 16) & 0xFFFFFF; XpNameConfig.save();
+                                  c.getSource().sendFeedback(Text.literal("Colour set to #" + h));
+                              } catch (NumberFormatException e) {
+                                  c.getSource().sendFeedback(Text.literal("Use a hex colour like ff8800"));
+                              }
+                              return 1; })));
+ 
+                      root.then(ClientCommandManager.literal("shadow").executes(c -> {
+                          XpNameConfig.shadow = !XpNameConfig.shadow; XpNameConfig.save();
+                          c.getSource().sendFeedback(Text.literal("Shadow: " + XpNameConfig.shadow)); return 1; }));
+ 
+                      root.then(ClientCommandManager.literal("offset")
+                          .then(ClientCommandManager.argument("pixels", IntegerArgumentType.integer(-100, 100)).executes(c -> {
+                              XpNameConfig.yOffset = IntegerArgumentType.getInteger(c, "pixels"); XpNameConfig.save();
+                              c.getSource().sendFeedback(Text.literal("Vertical offset: " + XpNameConfig.yOffset)); return 1; })));
+ 
+                      root.then(ClientCommandManager.literal("toggle").executes(c -> {
+                          XpNameConfig.enabled = !XpNameConfig.enabled; XpNameConfig.save();
+                          c.getSource().sendFeedback(Text.literal("XP Name " + (XpNameConfig.enabled ? "enabled" : "disabled (vanilla XP number)"))); return 1; }));
+ 
+                      root.then(ClientCommandManager.literal("reset").executes(c -> {
+                          XpNameConfig.reset();
+                          c.getSource().sendFeedback(Text.literal("XP Name settings reset.")); return 1; }));
+ 
+                      dispatcher.register(root);
+                  });
+              }
+ 
+              private void render(DrawContext ctx, RenderTickCounter tickCounter) {
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  ClientPlayerEntity p = mc.player;
+                  if (!XpNameConfig.enabled || p == null || mc.options.hudHidden
+                          || mc.interactionManager == null || !mc.interactionManager.hasExperienceBar()) return;
+ 
+                  String s = XpNameConfig.text
+                      .replace("{name}", p.getName().getString())
+                      .replace("{xp}", String.valueOf(p.experienceLevel))
+                      .replace("{points}", String.valueOf(p.totalExperience))
+                      .replace("{health}", String.valueOf((int) Math.ceil(p.getHealth())))
+                      .replace("{food}", String.valueOf(p.getHungerManager().getFoodLevel()))
+                      .replace('&', '\u00A7');
+ 
+                  Text t = Text.literal(s);
+                  int w = mc.textRenderer.getWidth(t);
+                  int x = (ctx.getScaledWindowWidth() - w) / 2;
+                  int y = ctx.getScaledWindowHeight() - 35 + XpNameConfig.yOffset; // same spot as vanilla XP number
+                  int argb = 0xFF000000 | XpNameConfig.color; // 1.21.6+ needs an alpha channel
+                  ctx.drawText(mc.textRenderer, t, x, y, argb, XpNameConfig.shadow);
+              }
+          }
+          XPNAME_EOF
       - run: gradle build
+      - run: ls -la build/libs && unzip -l build/libs/xpname-1.0.0.jar
       - uses: actions/upload-artifact@v4
         with:
           name: xpname-jar
